@@ -13,12 +13,12 @@ import io.vertx.mutiny.core.Vertx;
 import io.vertx.mutiny.core.buffer.Buffer;
 import io.vertx.mutiny.ext.web.client.HttpResponse;
 import io.vertx.mutiny.ext.web.client.WebClient;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import javax.enterprise.context.ApplicationScoped;
 import javax.imageio.ImageIO;
-import javax.inject.Inject;
-import javax.inject.Named;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
@@ -26,11 +26,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
-import java.time.Duration;
-import java.util.*;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.*;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -49,6 +46,13 @@ public class TaskService {
     @ConfigProperty(name = "comic.download.path")
     String downloadPath;
 
+    @ConfigProperty(name = "comic.domain.list")
+    List<String> domainList;
+
+    static String domain;
+
+    LongAdder domainAdder = new LongAdder();
+
     @Inject
     Vertx vertx;
 
@@ -66,7 +70,8 @@ public class TaskService {
 
     public Uni<List<ChapterEntity>> processChapterInfo(String body, String homePage) {
         List<ChapterEntity> chapterEntities = new ArrayList<>();
-        var host = "https://" + StrUtil.subBetween(homePage, "//", "/");
+        //var host = "https://" + StrUtil.subBetween(homePage, "//", "/");
+        var host = "https://" + domain;
         var isSingleChapter = StrUtil.subBetween(body, "<ul class=\"btn-toolbar", "</ul>") == null;
         if(isSingleChapter) {
             //说明该漫画是单章漫画,没有区分章节,例如王者荣耀图鉴类型的https://18comic.vip/album/203961
@@ -135,7 +140,7 @@ public class TaskService {
                     if(StrUtil.containsAny(photo, ".jpg", ".webp", ".png")) {
                         photo = StrUtil.removeAll(photo, " id=\"");
                         var urlAndName = StrUtil.splitToArray(photo, "\"");
-                        var photoEntity = new PhotoEntity(StrUtil.trim(urlAndName[ 1 ]), StrUtil.trim(urlAndName[ 0 ]));
+                        var photoEntity = new PhotoEntity(StrUtil.trim(urlAndName[ 1 ]), StrUtil.trim(StrUtil.replace(urlAndName[ 0 ], StrUtil.subBetween(urlAndName[ 0 ], "//", "/"), domain)));
                         photoEntities.add(photoEntity);
                         log.info(StrUtil.format("{}:chapter:[{}]-photo:[{}]-url:[{}]", this.clickPhotoCounter(true), chapterEntity.name(), photoEntity.name(), photoEntity.url()));
                     }
@@ -299,7 +304,7 @@ public class TaskService {
     public Uni<HttpResponse<Buffer>> post(String url) {
         var request = webClient.getAbs(url)
                 .port(443)
-                .putHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9")
+                .putHeader("Accept", "text/html,application/xhtml+xml,application/xml")
                 .putHeader("Accept-Encoding", "deflate")
                 .putHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6")
                 .putHeader("Refer", url)
@@ -309,11 +314,20 @@ public class TaskService {
                 .putHeader("pragma", " no-cache");
         //cookie.ifPresent(cook -> request.putHeader("cookie", cook));
         return request.send()
-                .chain(response -> this.checkResponseStatus(url, response))
+                .chain(response -> this.checkResponseStatus(url, response));
+    }
+
+    public Uni<HttpResponse<Buffer>> postRetry(String url) {
+        return this.post(url)
                 .onFailure()
-                .retry()
-                .withBackOff(Duration.ofSeconds(4L))
-                .atMost(10);
+                .recoverWithUni(response -> {
+                    domainAdder.increment();
+                    if(domainAdder.intValue() > domainList.size()) {
+                        throw new IllegalStateException("全部域名存在访问限制!");
+                    } else {
+                        return this.postRetry(StrUtil.replace(url, StrUtil.subBetween(url, "//", "/"), domainList.get(domainAdder.intValue() - 1)));
+                    }
+                });
     }
 
     private Uni<HttpResponse<Buffer>> checkResponseStatus(String url, HttpResponse<Buffer> response) {
@@ -337,6 +351,7 @@ public class TaskService {
             log.error(StrUtil.format("发送请求[{}]->发现cloudflare反爬虫验证, 正在进入重试:[We are checking your browser...]", url));
             throw new IllegalStateException("We are checking your browser...");
         }
+        domain = StrUtil.subBetween(url, "//", "/");
         return Uni.createFrom()
                 .item(response);
     }

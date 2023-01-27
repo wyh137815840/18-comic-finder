@@ -1,23 +1,27 @@
 package io.github.jiayaoO3O.finder.service;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.net.NetUtil;
+import cn.hutool.core.util.ArrayUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.http.HttpUtil;
 import cn.hutool.log.Log;
 import io.github.jiayaoO3O.finder.entity.ChapterEntity;
 import io.github.jiayaoO3O.finder.entity.PhotoEntity;
 import io.smallrye.mutiny.Uni;
 import io.vertx.mutiny.core.buffer.Buffer;
 import io.vertx.mutiny.ext.web.client.HttpResponse;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
-import java.util.function.ToIntFunction;
 
 /**
  * Created by jiayao on 2021/3/23.
@@ -29,11 +33,10 @@ public class ComicService {
     @Inject
     TaskService taskService;
 
-
     public void processComic(String homePage) {
         //如果网页中存在photo字段, 说明传入的链接是某个章节, 而不是漫画首页, 此时需要将photo换成album再访问, 禁漫天堂会自动重定向到该漫画的首页.
         String url = StrUtil.replace(homePage, "photo", "album");
-        taskService.post(url)
+        taskService.postRetry(url)
                 .subscribe()
                 .with(this.homePageConsumer(homePage));
     }
@@ -72,7 +75,7 @@ public class ComicService {
             //经常是封面, 有大片留白, 对相似度算法有相当大的影响
             photoEntities = CollUtil.sort(photoEntities, Comparator.comparingInt(photo -> RandomUtil.randomInt(2048)));
             for(PhotoEntity photoEntity : photoEntities) {
-                var photoPath = chapterDir + File.separatorChar + photoEntity.name();
+                var photoPath = chapterDir + File.separatorChar + StrUtil.replace(photoEntity.name(), ".webp", ".jpg");
                 var booleanUni = taskService.processPhotoExists(photoPath);
                 booleanUni.subscribe()
                         .with(this.photoExistsConsumer(chapterEntity, photoEntity, photoPath));
